@@ -2,14 +2,11 @@
 
 use core::fmt;
 
-use secp256k1::XOnlyPublicKey;
-
 use crate::blockdata::locktime::absolute;
 use crate::blockdata::opcodes::all::*;
 use crate::blockdata::opcodes::{self, Opcode};
 use crate::blockdata::script::{opcode_to_verify, write_scriptint, PushBytes, Script, ScriptBuf};
 use crate::blockdata::transaction::Sequence;
-use crate::key::PublicKey;
 use crate::prelude::*;
 
 /// An Object which can be used to construct a script piece by piece.
@@ -61,20 +58,6 @@ impl Builder {
         self.0.push_slice(data);
         self.1 = None;
         self
-    }
-
-    /// Adds instructions to push a public key onto the stack.
-    pub fn push_key(self, key: &PublicKey) -> Builder {
-        if key.compressed {
-            self.push_slice(key.inner.serialize())
-        } else {
-            self.push_slice(key.inner.serialize_uncompressed())
-        }
-    }
-
-    /// Adds instructions to push an XOnly public key onto the stack.
-    pub fn push_x_only_key(self, x_only_key: &XOnlyPublicKey) -> Builder {
-        self.push_slice(x_only_key.serialize())
     }
 
     /// Adds a single opcode to the script.

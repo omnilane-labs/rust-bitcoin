@@ -5,8 +5,7 @@
 //! This module provides keys used in Bitcoin that can be roundtrip
 //! (de)serialized.
 
-use core::fmt::{self, Write as _};
-use core::ops;
+use core::fmt;
 use core::str::FromStr;
 
 use hashes::{hash160, Hash};
@@ -14,22 +13,14 @@ use hex::{FromHex, HexToArrayError};
 use internals::array_vec::ArrayVec;
 use internals::write_err;
 use io::{Read, Write};
+use secp256k1::elliptic_curve::sec1::ToEncodedPoint;
 
 use crate::blockdata::script::ScriptBuf;
-use crate::crypto::ecdsa;
 use crate::internal_macros::impl_asref_push_bytes;
-use crate::network::NetworkKind;
 use crate::prelude::*;
-use crate::taproot::{TapNodeHash, TapTweakHash};
-
-#[rustfmt::skip]                // Keep public re-exports separate.
-pub use secp256k1::{constants, Keypair, Parity, Secp256k1, Verification, XOnlyPublicKey};
-
-#[cfg(feature = "rand-std")]
-pub use secp256k1::rand;
 
 /// A Bitcoin ECDSA public key
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PublicKey {
     /// Whether this public key should be serialized as compressed
     pub compressed: bool,
@@ -50,11 +41,7 @@ impl PublicKey {
     }
 
     fn with_serialized<R, F: FnOnce(&[u8]) -> R>(&self, f: F) -> R {
-        if self.compressed {
-            f(&self.inner.serialize())
-        } else {
-            f(&self.inner.serialize_uncompressed())
-        }
+        f(&self.inner.to_encoded_point(self.compressed).as_bytes())
     }
 
     /// Returns bitcoin 160-bit hash of the public key
@@ -64,7 +51,7 @@ impl PublicKey {
     pub fn wpubkey_hash(&self) -> Result<WPubkeyHash, UncompressedPublicKeyError> {
         if self.compressed {
             Ok(WPubkeyHash::from_byte_array(
-                hash160::Hash::hash(&self.inner.serialize()).to_byte_array(),
+                hash160::Hash::hash(&self.inner.to_encoded_point(true).as_bytes()).to_byte_array(),
             ))
         } else {
             Err(UncompressedPublicKeyError)
@@ -166,10 +153,10 @@ impl PublicKey {
     /// ```
     pub fn to_sort_key(self) -> SortKey {
         if self.compressed {
-            let buf = ArrayVec::from_slice(&self.inner.serialize());
+            let buf = ArrayVec::from_slice(&self.inner.to_encoded_point(true).as_bytes());
             SortKey(buf)
         } else {
-            let buf = ArrayVec::from_slice(&self.inner.serialize_uncompressed());
+            let buf = ArrayVec::from_slice(&self.inner.to_encoded_point(false).as_bytes());
             SortKey(buf)
         }
     }
@@ -188,34 +175,12 @@ impl PublicKey {
             return Err(FromSliceError::InvalidKeyPrefix(data[0]));
         }
 
-        Ok(PublicKey { compressed, inner: secp256k1::PublicKey::from_slice(data)? })
-    }
-
-    /// Computes the public key as supposed to be used with this secret
-    pub fn from_private_key<C: secp256k1::Signing>(
-        secp: &Secp256k1<C>,
-        sk: &PrivateKey,
-    ) -> PublicKey {
-        sk.public_key(secp)
-    }
-
-    /// Checks that `sig` is a valid ECDSA signature for `msg` using this public key.
-    pub fn verify<C: secp256k1::Verification>(
-        &self,
-        secp: &Secp256k1<C>,
-        msg: &secp256k1::Message,
-        sig: &ecdsa::Signature,
-    ) -> Result<(), secp256k1::Error> {
-        secp.verify_ecdsa(msg, &sig.signature, &self.inner)
+        Ok(PublicKey { compressed, inner: secp256k1::PublicKey::from_sec1_bytes(data)? })
     }
 }
 
 impl From<secp256k1::PublicKey> for PublicKey {
     fn from(pk: secp256k1::PublicKey) -> PublicKey { PublicKey::new(pk) }
-}
-
-impl From<PublicKey> for XOnlyPublicKey {
-    fn from(pk: PublicKey) -> XOnlyPublicKey { pk.inner.into() }
 }
 
 /// An opaque return type for PublicKey::to_sort_key
@@ -270,7 +235,7 @@ impl From<&PublicKey> for PubkeyHash {
 }
 
 /// An always-compressed Bitcoin ECDSA public key
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CompressedPublicKey(pub secp256k1::PublicKey);
 
 impl CompressedPublicKey {
@@ -317,29 +282,11 @@ impl CompressedPublicKey {
     ///
     /// Note that this can be used as a sort key to get BIP67-compliant sorting.
     /// That's why this type doesn't have the `to_sort_key` method - it would duplicate this one.
-    pub fn to_bytes(&self) -> [u8; 33] { self.0.serialize() }
+    pub fn to_bytes(&self) -> [u8; 33] { self.0.to_encoded_point(true).as_bytes().try_into().unwrap() }
 
     /// Deserialize a public key from a slice
-    pub fn from_slice(data: &[u8]) -> Result<Self, secp256k1::Error> {
-        secp256k1::PublicKey::from_slice(data).map(CompressedPublicKey)
-    }
-
-    /// Computes the public key as supposed to be used with this secret
-    pub fn from_private_key<C: secp256k1::Signing>(
-        secp: &Secp256k1<C>,
-        sk: &PrivateKey,
-    ) -> Result<Self, UncompressedPublicKeyError> {
-        sk.public_key(secp).try_into()
-    }
-
-    /// Checks that `sig` is a valid ECDSA signature for `msg` using this public key.
-    pub fn verify<C: secp256k1::Verification>(
-        &self,
-        secp: &Secp256k1<C>,
-        msg: &secp256k1::Message,
-        sig: &ecdsa::Signature,
-    ) -> Result<(), secp256k1::Error> {
-        Ok(secp.verify_ecdsa(msg, &sig.signature, &self.0)?)
+    pub fn from_slice(data: &[u8]) -> Result<Self, secp256k1::elliptic_curve::Error> {
+        secp256k1::PublicKey::from_sec1_bytes(data).map(CompressedPublicKey)
     }
 }
 
@@ -373,10 +320,6 @@ impl From<CompressedPublicKey> for PublicKey {
     fn from(value: CompressedPublicKey) -> Self { PublicKey::new(value.0) }
 }
 
-impl From<CompressedPublicKey> for XOnlyPublicKey {
-    fn from(pk: CompressedPublicKey) -> Self { pk.0.into() }
-}
-
 impl From<CompressedPublicKey> for PubkeyHash {
     fn from(key: CompressedPublicKey) -> Self { key.pubkey_hash() }
 }
@@ -391,167 +334,6 @@ impl From<CompressedPublicKey> for WPubkeyHash {
 
 impl From<&CompressedPublicKey> for WPubkeyHash {
     fn from(key: &CompressedPublicKey) -> Self { key.wpubkey_hash() }
-}
-
-/// A Bitcoin ECDSA private key
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct PrivateKey {
-    /// Whether this private key should be serialized as compressed
-    pub compressed: bool,
-    /// The network kind on which this key should be used
-    pub network: NetworkKind,
-    /// The actual ECDSA key
-    pub inner: secp256k1::SecretKey,
-}
-
-impl PrivateKey {
-    /// Constructs new compressed ECDSA private key using the secp256k1 algorithm and
-    /// a secure random number generator.
-    #[cfg(feature = "rand-std")]
-    pub fn generate(network: impl Into<NetworkKind>) -> PrivateKey {
-        let secret_key = secp256k1::SecretKey::new(&mut rand::thread_rng());
-        PrivateKey::new(secret_key, network.into())
-    }
-    /// Constructs compressed ECDSA private key from the provided generic Secp256k1 private key
-    /// and the specified network
-    pub fn new(key: secp256k1::SecretKey, network: impl Into<NetworkKind>) -> PrivateKey {
-        PrivateKey { compressed: true, network: network.into(), inner: key }
-    }
-
-    /// Constructs uncompressed (legacy) ECDSA private key from the provided generic Secp256k1
-    /// private key and the specified network
-    pub fn new_uncompressed(
-        key: secp256k1::SecretKey,
-        network: impl Into<NetworkKind>,
-    ) -> PrivateKey {
-        PrivateKey { compressed: false, network: network.into(), inner: key }
-    }
-
-    /// Creates a public key from this private key
-    pub fn public_key<C: secp256k1::Signing>(&self, secp: &Secp256k1<C>) -> PublicKey {
-        PublicKey {
-            compressed: self.compressed,
-            inner: secp256k1::PublicKey::from_secret_key(secp, &self.inner),
-        }
-    }
-
-    /// Serialize the private key to bytes
-    pub fn to_bytes(self) -> Vec<u8> { self.inner[..].to_vec() }
-
-    /// Deserialize a private key from a slice
-    pub fn from_slice(
-        data: &[u8],
-        network: impl Into<NetworkKind>,
-    ) -> Result<PrivateKey, secp256k1::Error> {
-        Ok(PrivateKey::new(secp256k1::SecretKey::from_slice(data)?, network))
-    }
-
-    /// Format the private key to WIF format.
-    #[rustfmt::skip]
-    pub fn fmt_wif(&self, fmt: &mut dyn fmt::Write) -> fmt::Result {
-        let mut ret = [0; 34];
-        ret[0] = if self.network.is_mainnet() { 128 } else { 239 };
-
-        ret[1..33].copy_from_slice(&self.inner[..]);
-        let privkey = if self.compressed {
-            ret[33] = 1;
-            base58::encode_check(&ret[..])
-        } else {
-            base58::encode_check(&ret[..33])
-        };
-        fmt.write_str(&privkey)
-    }
-
-    /// Get WIF encoding of this private key.
-    pub fn to_wif(self) -> String {
-        let mut buf = String::new();
-        buf.write_fmt(format_args!("{}", self)).unwrap();
-        buf.shrink_to_fit();
-        buf
-    }
-
-    /// Parse WIF encoded private key.
-    pub fn from_wif(wif: &str) -> Result<PrivateKey, FromWifError> {
-        let data = base58::decode_check(wif)?;
-
-        let compressed = match data.len() {
-            33 => false,
-            34 => true,
-            length => {
-                return Err(InvalidBase58PayloadLengthError { length }.into());
-            }
-        };
-
-        let network = match data[0] {
-            128 => NetworkKind::Main,
-            239 => NetworkKind::Test,
-            invalid => {
-                return Err(InvalidAddressVersionError { invalid }.into());
-            }
-        };
-
-        Ok(PrivateKey {
-            compressed,
-            network,
-            inner: secp256k1::SecretKey::from_slice(&data[1..33])?,
-        })
-    }
-}
-
-impl fmt::Display for PrivateKey {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { self.fmt_wif(f) }
-}
-
-impl FromStr for PrivateKey {
-    type Err = FromWifError;
-    fn from_str(s: &str) -> Result<PrivateKey, FromWifError> { PrivateKey::from_wif(s) }
-}
-
-impl ops::Index<ops::RangeFull> for PrivateKey {
-    type Output = [u8];
-    fn index(&self, _: ops::RangeFull) -> &[u8] { &self.inner[..] }
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for PrivateKey {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(self)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for PrivateKey {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<PrivateKey, D::Error> {
-        struct WifVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for WifVisitor {
-            type Value = PrivateKey;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-                formatter.write_str("an ASCII WIF string")
-            }
-
-            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                if let Ok(s) = core::str::from_utf8(v) {
-                    PrivateKey::from_str(s).map_err(E::custom)
-                } else {
-                    Err(E::invalid_value(::serde::de::Unexpected::Bytes(v), &self))
-                }
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                PrivateKey::from_str(v).map_err(E::custom)
-            }
-        }
-
-        d.deserialize_str(WifVisitor)
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -686,204 +468,6 @@ impl<'de> serde::Deserialize<'de> for CompressedPublicKey {
         }
     }
 }
-/// Untweaked BIP-340 X-coord-only public key
-pub type UntweakedPublicKey = XOnlyPublicKey;
-
-/// Tweaked BIP-340 X-coord-only public key
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "actual_serde"))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct TweakedPublicKey(XOnlyPublicKey);
-
-impl fmt::LowerHex for TweakedPublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::LowerHex::fmt(&self.0, f) }
-}
-
-impl fmt::Display for TweakedPublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
-}
-
-/// Untweaked BIP-340 key pair
-pub type UntweakedKeypair = Keypair;
-
-/// Tweaked BIP-340 key pair
-///
-/// # Examples
-/// ```
-/// # #[cfg(feature = "rand-std")] {
-/// # use bitcoin::key::{Keypair, TweakedKeypair, TweakedPublicKey};
-/// # use bitcoin::secp256k1::{rand, Secp256k1};
-/// # let secp = Secp256k1::new();
-/// # let keypair = TweakedKeypair::dangerous_assume_tweaked(Keypair::new(&secp, &mut rand::thread_rng()));
-/// // There are various conversion methods available to get a tweaked pubkey from a tweaked keypair.
-/// let (_pk, _parity) = keypair.public_parts();
-/// let _pk  = TweakedPublicKey::from_keypair(keypair);
-/// let _pk = TweakedPublicKey::from(keypair);
-/// # }
-/// ```
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "actual_serde"))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct TweakedKeypair(Keypair);
-
-/// A trait for tweaking BIP340 key types (x-only public keys and key pairs).
-pub trait TapTweak {
-    /// Tweaked key type with optional auxiliary information
-    type TweakedAux;
-    /// Tweaked key type
-    type TweakedKey;
-
-    /// Tweaks an untweaked key with corresponding public key value and optional script tree merkle
-    /// root. For the [`Keypair`] type this also tweaks the private key in the pair.
-    ///
-    /// This is done by using the equation Q = P + H(P|c)G, where
-    ///  * Q is the tweaked public key
-    ///  * P is the internal public key
-    ///  * H is the hash function
-    ///  * c is the commitment data
-    ///  * G is the generator point
-    ///
-    /// # Returns
-    /// The tweaked key and its parity.
-    fn tap_tweak<C: Verification>(
-        self,
-        secp: &Secp256k1<C>,
-        merkle_root: Option<TapNodeHash>,
-    ) -> Self::TweakedAux;
-
-    /// Directly converts an [`UntweakedPublicKey`] to a [`TweakedPublicKey`]
-    ///
-    /// This method is dangerous and can lead to loss of funds if used incorrectly.
-    /// Specifically, in multi-party protocols a peer can provide a value that allows them to steal.
-    fn dangerous_assume_tweaked(self) -> Self::TweakedKey;
-}
-
-impl TapTweak for UntweakedPublicKey {
-    type TweakedAux = (TweakedPublicKey, Parity);
-    type TweakedKey = TweakedPublicKey;
-
-    /// Tweaks an untweaked public key with corresponding public key value and optional script tree
-    /// merkle root.
-    ///
-    /// This is done by using the equation Q = P + H(P|c)G, where
-    ///  * Q is the tweaked public key
-    ///  * P is the internal public key
-    ///  * H is the hash function
-    ///  * c is the commitment data
-    ///  * G is the generator point
-    ///
-    /// # Returns
-    /// The tweaked key and its parity.
-    fn tap_tweak<C: Verification>(
-        self,
-        secp: &Secp256k1<C>,
-        merkle_root: Option<TapNodeHash>,
-    ) -> (TweakedPublicKey, Parity) {
-        let tweak = TapTweakHash::from_key_and_tweak(self, merkle_root).to_scalar();
-        let (output_key, parity) = self.add_tweak(secp, &tweak).expect("Tap tweak failed");
-
-        debug_assert!(self.tweak_add_check(secp, &output_key, parity, tweak));
-        (TweakedPublicKey(output_key), parity)
-    }
-
-    fn dangerous_assume_tweaked(self) -> TweakedPublicKey { TweakedPublicKey(self) }
-}
-
-impl TapTweak for UntweakedKeypair {
-    type TweakedAux = TweakedKeypair;
-    type TweakedKey = TweakedKeypair;
-
-    /// Tweaks private and public keys within an untweaked [`Keypair`] with corresponding public key
-    /// value and optional script tree merkle root.
-    ///
-    /// This is done by tweaking private key within the pair using the equation q = p + H(P|c), where
-    ///  * q is the tweaked private key
-    ///  * p is the internal private key
-    ///  * H is the hash function
-    ///  * c is the commitment data
-    /// The public key is generated from a private key by multiplying with generator point, Q = qG.
-    ///
-    /// # Returns
-    /// The tweaked key and its parity.
-    fn tap_tweak<C: Verification>(
-        self,
-        secp: &Secp256k1<C>,
-        merkle_root: Option<TapNodeHash>,
-    ) -> TweakedKeypair {
-        let (pubkey, _parity) = XOnlyPublicKey::from_keypair(&self);
-        let tweak = TapTweakHash::from_key_and_tweak(pubkey, merkle_root).to_scalar();
-        let tweaked = self.add_xonly_tweak(secp, &tweak).expect("Tap tweak failed");
-        TweakedKeypair(tweaked)
-    }
-
-    fn dangerous_assume_tweaked(self) -> TweakedKeypair { TweakedKeypair(self) }
-}
-
-impl TweakedPublicKey {
-    /// Returns the [`TweakedPublicKey`] for `keypair`.
-    #[inline]
-    pub fn from_keypair(keypair: TweakedKeypair) -> Self {
-        let (xonly, _parity) = keypair.0.x_only_public_key();
-        TweakedPublicKey(xonly)
-    }
-
-    /// Creates a new [`TweakedPublicKey`] from a [`XOnlyPublicKey`]. No tweak is applied, consider
-    /// calling `tap_tweak` on an [`UntweakedPublicKey`] instead of using this constructor.
-    ///
-    /// This method is dangerous and can lead to loss of funds if used incorrectly.
-    /// Specifically, in multi-party protocols a peer can provide a value that allows them to steal.
-    #[inline]
-    pub fn dangerous_assume_tweaked(key: XOnlyPublicKey) -> TweakedPublicKey {
-        TweakedPublicKey(key)
-    }
-
-    /// Returns the underlying public key.
-    pub fn to_inner(self) -> XOnlyPublicKey { self.0 }
-
-    /// Serialize the key as a byte-encoded pair of values. In compressed form
-    /// the y-coordinate is represented by only a single bit, as x determines
-    /// it up to one bit.
-    #[inline]
-    pub fn serialize(&self) -> [u8; constants::SCHNORR_PUBLIC_KEY_SIZE] { self.0.serialize() }
-}
-
-impl TweakedKeypair {
-    /// Creates a new [`TweakedKeypair`] from a [`Keypair`]. No tweak is applied, consider
-    /// calling `tap_tweak` on an [`UntweakedKeypair`] instead of using this constructor.
-    ///
-    /// This method is dangerous and can lead to loss of funds if used incorrectly.
-    /// Specifically, in multi-party protocols a peer can provide a value that allows them to steal.
-    #[inline]
-    pub fn dangerous_assume_tweaked(pair: Keypair) -> TweakedKeypair { TweakedKeypair(pair) }
-
-    /// Returns the underlying key pair.
-    #[inline]
-    pub fn to_inner(self) -> Keypair { self.0 }
-
-    /// Returns the [`TweakedPublicKey`] and its [`Parity`] for this [`TweakedKeypair`].
-    #[inline]
-    pub fn public_parts(&self) -> (TweakedPublicKey, Parity) {
-        let (xonly, parity) = self.0.x_only_public_key();
-        (TweakedPublicKey(xonly), parity)
-    }
-}
-
-impl From<TweakedPublicKey> for XOnlyPublicKey {
-    #[inline]
-    fn from(pair: TweakedPublicKey) -> Self { pair.0 }
-}
-
-impl From<TweakedKeypair> for Keypair {
-    #[inline]
-    fn from(pair: TweakedKeypair) -> Self { pair.0 }
-}
-
-impl From<TweakedKeypair> for TweakedPublicKey {
-    #[inline]
-    fn from(pair: TweakedKeypair) -> Self { TweakedPublicKey::from_keypair(pair) }
-}
 
 /// Error returned while generating key from slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -892,7 +476,7 @@ pub enum FromSliceError {
     /// Invalid key prefix error.
     InvalidKeyPrefix(u8),
     /// A Secp256k1 error.
-    Secp256k1(secp256k1::Error),
+    Secp256k1(secp256k1::elliptic_curve::Error),
     /// Invalid Length of the slice.
     InvalidLength(usize),
 }
@@ -923,8 +507,8 @@ impl std::error::Error for FromSliceError {
     }
 }
 
-impl From<secp256k1::Error> for FromSliceError {
-    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1(e) }
+impl From<secp256k1::elliptic_curve::Error> for FromSliceError {
+    fn from(e: secp256k1::elliptic_curve::Error) -> Self { Self::Secp256k1(e) }
 }
 
 /// Error generated from WIF key format.
@@ -938,7 +522,7 @@ pub enum FromWifError {
     /// Base58 decoded data contained an invalid address version byte.
     InvalidAddressVersion(InvalidAddressVersionError),
     /// A secp256k1 error.
-    Secp256k1(secp256k1::Error),
+    Secp256k1(secp256k1::elliptic_curve::Error),
 }
 
 internals::impl_from_infallible!(FromWifError);
@@ -976,8 +560,8 @@ impl From<base58::Error> for FromWifError {
     fn from(e: base58::Error) -> Self { Self::Base58(e) }
 }
 
-impl From<secp256k1::Error> for FromWifError {
-    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1(e) }
+impl From<secp256k1::elliptic_curve::Error> for FromWifError {
+    fn from(e: secp256k1::elliptic_curve::Error) -> Self { Self::Secp256k1(e) }
 }
 
 impl From<InvalidBase58PayloadLengthError> for FromWifError {
@@ -1035,7 +619,7 @@ impl From<FromSliceError> for ParsePublicKeyError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseCompressedPublicKeyError {
     /// Secp256k1 Error.
-    Secp256k1(secp256k1::Error),
+    Secp256k1(secp256k1::elliptic_curve::Error),
     /// hex to array conversion error.
     Hex(hex::HexToArrayError),
 }
@@ -1064,8 +648,8 @@ impl std::error::Error for ParseCompressedPublicKeyError {
     }
 }
 
-impl From<secp256k1::Error> for ParseCompressedPublicKeyError {
-    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1(e) }
+impl From<secp256k1::elliptic_curve::Error> for ParseCompressedPublicKeyError {
+    fn from(e: secp256k1::elliptic_curve::Error) -> Self { Self::Secp256k1(e) }
 }
 
 impl From<hex::HexToArrayError> for ParseCompressedPublicKeyError {
@@ -1133,54 +717,6 @@ impl std::error::Error for InvalidAddressVersionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::address::Address;
-
-    #[test]
-    fn test_key_derivation() {
-        // testnet compressed
-        let sk =
-            PrivateKey::from_wif("cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy").unwrap();
-        assert_eq!(sk.network, NetworkKind::Test);
-        assert!(sk.compressed);
-        assert_eq!(&sk.to_wif(), "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy");
-
-        let secp = Secp256k1::new();
-        let pk = Address::p2pkh(sk.public_key(&secp), sk.network);
-        assert_eq!(&pk.to_string(), "mqwpxxvfv3QbM8PU8uBx2jaNt9btQqvQNx");
-
-        // test string conversion
-        assert_eq!(&sk.to_string(), "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy");
-        let sk_str =
-            PrivateKey::from_str("cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy").unwrap();
-        assert_eq!(&sk.to_wif(), &sk_str.to_wif());
-
-        // mainnet uncompressed
-        let sk =
-            PrivateKey::from_wif("5JYkZjmN7PVMjJUfJWfRFwtuXTGB439XV6faajeHPAM9Z2PT2R3").unwrap();
-        assert_eq!(sk.network, NetworkKind::Main);
-        assert!(!sk.compressed);
-        assert_eq!(&sk.to_wif(), "5JYkZjmN7PVMjJUfJWfRFwtuXTGB439XV6faajeHPAM9Z2PT2R3");
-
-        let secp = Secp256k1::new();
-        let mut pk = sk.public_key(&secp);
-        assert!(!pk.compressed);
-        assert_eq!(&pk.to_string(), "042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133");
-        assert_eq!(pk, PublicKey::from_str("042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133").unwrap());
-        let addr = Address::p2pkh(pk, sk.network);
-        assert_eq!(&addr.to_string(), "1GhQvF6dL8xa6wBxLnWmHcQsurx9RxiMc8");
-        pk.compressed = true;
-        assert_eq!(
-            &pk.to_string(),
-            "032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af"
-        );
-        assert_eq!(
-            pk,
-            PublicKey::from_str(
-                "032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af"
-            )
-            .unwrap()
-        );
-    }
 
     #[test]
     fn test_pubkey_hash() {
@@ -1205,51 +741,6 @@ mod tests {
             "9511aa27ef39bbfa4e4f3dd15f4d66ea57f475b4"
         );
         assert!(upk.wpubkey_hash().is_err());
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn test_key_serde() {
-        use serde_test::{assert_tokens, Configure, Token};
-
-        static KEY_WIF: &str = "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy";
-        static PK_STR: &str = "039b6347398505f5ec93826dc61c19f47c66c0283ee9be980e29ce325a0f4679ef";
-        static PK_STR_U: &str = "\
-            04\
-            9b6347398505f5ec93826dc61c19f47c66c0283ee9be980e29ce325a0f4679ef\
-            87288ed73ce47fc4f5c79d19ebfa57da7cff3aff6e819e4ee971d86b5e61875d\
-        ";
-        #[rustfmt::skip]
-        static PK_BYTES: [u8; 33] = [
-            0x03,
-            0x9b, 0x63, 0x47, 0x39, 0x85, 0x05, 0xf5, 0xec,
-            0x93, 0x82, 0x6d, 0xc6, 0x1c, 0x19, 0xf4, 0x7c,
-            0x66, 0xc0, 0x28, 0x3e, 0xe9, 0xbe, 0x98, 0x0e,
-            0x29, 0xce, 0x32, 0x5a, 0x0f, 0x46, 0x79, 0xef,
-        ];
-        #[rustfmt::skip]
-        static PK_BYTES_U: [u8; 65] = [
-            0x04,
-            0x9b, 0x63, 0x47, 0x39, 0x85, 0x05, 0xf5, 0xec,
-            0x93, 0x82, 0x6d, 0xc6, 0x1c, 0x19, 0xf4, 0x7c,
-            0x66, 0xc0, 0x28, 0x3e, 0xe9, 0xbe, 0x98, 0x0e,
-            0x29, 0xce, 0x32, 0x5a, 0x0f, 0x46, 0x79, 0xef,
-            0x87, 0x28, 0x8e, 0xd7, 0x3c, 0xe4, 0x7f, 0xc4,
-            0xf5, 0xc7, 0x9d, 0x19, 0xeb, 0xfa, 0x57, 0xda,
-            0x7c, 0xff, 0x3a, 0xff, 0x6e, 0x81, 0x9e, 0x4e,
-            0xe9, 0x71, 0xd8, 0x6b, 0x5e, 0x61, 0x87, 0x5d,
-        ];
-
-        let s = Secp256k1::new();
-        let sk = PrivateKey::from_str(KEY_WIF).unwrap();
-        let pk = PublicKey::from_private_key(&s, &sk);
-        let pk_u = PublicKey { inner: pk.inner, compressed: false };
-
-        assert_tokens(&sk, &[Token::BorrowedStr(KEY_WIF)]);
-        assert_tokens(&pk.compact(), &[Token::BorrowedBytes(&PK_BYTES[..])]);
-        assert_tokens(&pk.readable(), &[Token::BorrowedStr(PK_STR)]);
-        assert_tokens(&pk_u.compact(), &[Token::BorrowedBytes(&PK_BYTES_U[..])]);
-        assert_tokens(&pk_u.readable(), &[Token::BorrowedStr(PK_STR_U)]);
     }
 
     fn random_key(mut seed: u8) -> PublicKey {
@@ -1472,7 +963,7 @@ mod tests {
         assert_eq!(
             res.unwrap_err(),
             ParsePublicKeyError::Encoding(FromSliceError::Secp256k1(
-                secp256k1::Error::InvalidPublicKey
+                secp256k1::elliptic_curve::Error
             ))
         );
 
@@ -1483,7 +974,7 @@ mod tests {
         assert_eq!(
             res.unwrap_err(),
             ParsePublicKeyError::Encoding(FromSliceError::Secp256k1(
-                secp256k1::Error::InvalidPublicKey
+                secp256k1::elliptic_curve::Error
             ))
         );
 
@@ -1507,27 +998,5 @@ mod tests {
         let res = PublicKey::from_str(s);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), ParsePublicKeyError::InvalidChar(103));
-    }
-
-    #[test]
-    #[cfg(feature = "std")]
-    fn private_key_debug_is_obfuscated() {
-        let sk =
-            PrivateKey::from_str("cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy").unwrap();
-        let want =
-            "PrivateKey { compressed: true, network: Test, inner: SecretKey(#32014e414fdce702) }";
-        let got = format!("{:?}", sk);
-        assert_eq!(got, want)
-    }
-
-    #[test]
-    #[cfg(all(not(feature = "std"), feature = "no-std"))]
-    fn private_key_debug_is_obfuscated() {
-        let sk =
-            PrivateKey::from_str("cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy").unwrap();
-        // Why is this not shortened? In rust-secp256k1/src/secret it is printed with "#{:016x}"?
-        let want = "PrivateKey { compressed: true, network: Testnet, inner: SecretKey(#7217ac58fbad8880a91032107b82cb6c5422544b426c350ee005cf509f3dbf7b) }";
-        let got = format!("{:?}", sk);
-        assert_eq!(got, want)
     }
 }

@@ -6,7 +6,6 @@ use core::ops::{
 };
 
 use hashes::Hash;
-use secp256k1::{Secp256k1, Verification};
 
 use super::PushBytes;
 use crate::blockdata::fee_rate::FeeRate;
@@ -18,10 +17,9 @@ use crate::blockdata::script::{
     ScriptHash, WScriptHash,
 };
 use crate::consensus::Encodable;
-use crate::key::{PublicKey, UntweakedPublicKey, WPubkeyHash};
+use crate::key::{PublicKey, WPubkeyHash};
 use crate::policy::DUST_RELAY_TX_FEE;
 use crate::prelude::*;
-use crate::taproot::{LeafVersion, TapLeafHash, TapNodeHash};
 
 /// Bitcoin script slice.
 ///
@@ -124,12 +122,6 @@ impl Script {
     #[inline]
     pub fn wscript_hash(&self) -> WScriptHash { WScriptHash::hash(self.as_bytes()) }
 
-    /// Computes leaf hash of tapscript.
-    #[inline]
-    pub fn tapscript_leaf_hash(&self) -> TapLeafHash {
-        TapLeafHash::from_script(self, LeafVersion::TapScript)
-    }
-
     /// Returns the length in bytes of the script.
     #[inline]
     pub fn len(&self) -> usize { self.0.len() }
@@ -150,19 +142,6 @@ impl Script {
     /// script").
     #[inline]
     pub fn to_p2wsh(&self) -> ScriptBuf { ScriptBuf::new_p2wsh(&self.wscript_hash()) }
-
-    /// Computes P2TR output with a given internal key and a single script spending path equal to
-    /// the current script, assuming that the script is a Tapscript.
-    #[inline]
-    pub fn to_p2tr<C: Verification>(
-        &self,
-        secp: &Secp256k1<C>,
-        internal_key: UntweakedPublicKey,
-    ) -> ScriptBuf {
-        let leaf_hash = self.tapscript_leaf_hash();
-        let merkle_root = TapNodeHash::from(leaf_hash);
-        ScriptBuf::new_p2tr(secp, internal_key, Some(merkle_root))
-    }
 
     /// Returns witness version of the script, if any, assuming the script is a `scriptPubkey`.
     ///

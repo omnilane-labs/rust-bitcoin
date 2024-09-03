@@ -34,7 +34,6 @@ use core::str::FromStr;
 
 use bech32::primitives::hrp::Hrp;
 use hashes::{sha256, Hash, HashEngine};
-use secp256k1::{Secp256k1, Verification, XOnlyPublicKey};
 
 use crate::blockdata::constants::{
     MAX_SCRIPT_ELEMENT_SIZE, PUBKEY_ADDRESS_PREFIX_MAIN, PUBKEY_ADDRESS_PREFIX_TEST,
@@ -45,20 +44,17 @@ use crate::blockdata::script::witness_version::WitnessVersion;
 use crate::blockdata::script::{self, Script, ScriptBuf, ScriptHash};
 use crate::consensus::Params;
 use crate::crypto::key::{
-    CompressedPublicKey, PubkeyHash, PublicKey, TweakedPublicKey, UntweakedPublicKey,
+    CompressedPublicKey, PubkeyHash, PublicKey,
 };
 use crate::network::{Network, NetworkKind};
 use crate::prelude::*;
-use crate::taproot::TapNodeHash;
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(inline)]
-pub use self::{
-    error::{
+pub use self::error::{
         FromScriptError, InvalidBase58PayloadLengthError, InvalidLegacyPrefixError, LegacyAddressTooLongError,
         NetworkValidationError, ParseError, P2shError, UnknownAddressTypeError, UnknownHrpError
-    },
-};
+    };
 
 /// The different types of addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -450,23 +446,6 @@ impl Address {
         Address::p2sh_from_hash(script_hash, network)
     }
 
-    /// Creates a pay to taproot address from an untweaked key.
-    pub fn p2tr<C: Verification>(
-        secp: &Secp256k1<C>,
-        internal_key: UntweakedPublicKey,
-        merkle_root: Option<TapNodeHash>,
-        hrp: impl Into<KnownHrp>,
-    ) -> Address {
-        let program = WitnessProgram::p2tr(secp, internal_key, merkle_root);
-        Address::from_witness_program(program, hrp)
-    }
-
-    /// Creates a pay to taproot address from a pre-tweaked output key.
-    pub fn p2tr_tweaked(output_key: TweakedPublicKey, hrp: impl Into<KnownHrp>) -> Address {
-        let program = WitnessProgram::p2tr_tweaked(output_key);
-        Address::from_witness_program(program, hrp)
-    }
-
     /// Creates an address from an arbitrary witness program.
     ///
     /// This only exists to support future witness versions. If you are doing normal mainnet things
@@ -628,19 +607,9 @@ impl Address {
     pub fn is_related_to_pubkey(&self, pubkey: &PublicKey) -> bool {
         let pubkey_hash = pubkey.pubkey_hash();
         let payload = self.payload_as_bytes();
-        let xonly_pubkey = XOnlyPublicKey::from(pubkey.inner);
 
         (*pubkey_hash.as_byte_array() == *payload)
-            || (xonly_pubkey.serialize() == *payload)
             || (*segwit_redeem_hash(&pubkey_hash).as_byte_array() == *payload)
-    }
-
-    /// Returns true if the supplied xonly public key can be used to derive the address.
-    ///
-    /// This will only work for Taproot addresses. The Public Key is
-    /// assumed to have already been tweaked.
-    pub fn is_related_to_xonly_pubkey(&self, xonly_pubkey: &XOnlyPublicKey) -> bool {
-        xonly_pubkey.serialize() == *self.payload_as_bytes()
     }
 
     /// Returns true if the address creates a particular script
@@ -1172,23 +1141,6 @@ mod tests {
     }
 
     #[test]
-    fn p2tr_from_untweaked() {
-        //Test case from BIP-086
-        let internal_key = XOnlyPublicKey::from_str(
-            "cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115",
-        )
-        .unwrap();
-        let secp = Secp256k1::verification_only();
-        let address = Address::p2tr(&secp, internal_key, None, KnownHrp::Mainnet);
-        assert_eq!(
-            address.to_string(),
-            "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
-        );
-        assert_eq!(address.address_type(), Some(AddressType::P2tr));
-        roundtrips(&address, Bitcoin);
-    }
-
-    #[test]
     fn test_is_related_to_pubkey_p2wpkh() {
         let address_string = "bc1qhvd6suvqzjcu9pxjhrwhtrlj85ny3n2mqql5w4";
         let address = Address::from_str(address_string)
@@ -1270,52 +1222,6 @@ mod tests {
         )
         .expect("pubkey");
         assert!(!address.is_related_to_pubkey(&unused_pubkey))
-    }
-
-    #[test]
-    fn test_is_related_to_pubkey_p2tr() {
-        let pubkey_string = "0347ff3dacd07a1f43805ec6808e801505a6e18245178609972a68afbc2777ff2b";
-        let pubkey = PublicKey::from_str(pubkey_string).expect("pubkey");
-        let xonly_pubkey = XOnlyPublicKey::from(pubkey.inner);
-        let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(xonly_pubkey);
-        let address = Address::p2tr_tweaked(tweaked_pubkey, KnownHrp::Mainnet);
-
-        assert_eq!(
-            address,
-            Address::from_str("bc1pgllnmtxs0g058qz7c6qgaqq4qknwrqj9z7rqn9e2dzhmcfmhlu4sfadf5e")
-                .expect("address")
-                .require_network(Network::Bitcoin)
-                .expect("mainnet")
-        );
-
-        let result = address.is_related_to_pubkey(&pubkey);
-        assert!(result);
-
-        let unused_pubkey = PublicKey::from_str(
-            "02ba604e6ad9d3864eda8dc41c62668514ef7d5417d3b6db46e45cc4533bff001c",
-        )
-        .expect("pubkey");
-        assert!(!address.is_related_to_pubkey(&unused_pubkey));
-    }
-
-    #[test]
-    fn test_is_related_to_xonly_pubkey() {
-        let pubkey_string = "0347ff3dacd07a1f43805ec6808e801505a6e18245178609972a68afbc2777ff2b";
-        let pubkey = PublicKey::from_str(pubkey_string).expect("pubkey");
-        let xonly_pubkey = XOnlyPublicKey::from(pubkey.inner);
-        let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(xonly_pubkey);
-        let address = Address::p2tr_tweaked(tweaked_pubkey, KnownHrp::Mainnet);
-
-        assert_eq!(
-            address,
-            Address::from_str("bc1pgllnmtxs0g058qz7c6qgaqq4qknwrqj9z7rqn9e2dzhmcfmhlu4sfadf5e")
-                .expect("address")
-                .require_network(Network::Bitcoin)
-                .expect("mainnet")
-        );
-
-        let result = address.is_related_to_xonly_pubkey(&xonly_pubkey);
-        assert!(result);
     }
 
     #[test]

@@ -11,12 +11,10 @@ use core::fmt;
 
 use hashes::Hash as _;
 use internals::array_vec::ArrayVec;
-use secp256k1::{Secp256k1, Verification};
 
 use crate::blockdata::script::witness_version::WitnessVersion;
 use crate::blockdata::script::{PushBytes, Script};
-use crate::crypto::key::{CompressedPublicKey, TapTweak, TweakedPublicKey, UntweakedPublicKey};
-use crate::taproot::TapNodeHash;
+use crate::crypto::key::CompressedPublicKey;
 
 /// The minimum byte size of a segregated witness program.
 pub const MIN_SIZE: usize = 2;
@@ -81,23 +79,6 @@ impl WitnessProgram {
     pub fn p2wsh(script: &Script) -> Self {
         let hash = script.wscript_hash();
         WitnessProgram::new_p2wsh(hash.to_byte_array())
-    }
-
-    /// Creates a pay to taproot address from an untweaked key.
-    pub fn p2tr<C: Verification>(
-        secp: &Secp256k1<C>,
-        internal_key: UntweakedPublicKey,
-        merkle_root: Option<TapNodeHash>,
-    ) -> Self {
-        let (output_key, _parity) = internal_key.tap_tweak(secp, merkle_root);
-        let pubkey = output_key.to_inner().serialize();
-        WitnessProgram::new_p2tr(pubkey)
-    }
-
-    /// Creates a pay to taproot address from a pre-tweaked output key.
-    pub fn p2tr_tweaked(output_key: TweakedPublicKey) -> Self {
-        let pubkey = output_key.to_inner().serialize();
-        WitnessProgram::new_p2tr(pubkey)
     }
 
     /// Returns the witness program version.

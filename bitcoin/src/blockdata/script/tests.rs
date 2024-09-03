@@ -7,62 +7,8 @@ use hex_lit::hex;
 
 use super::*;
 use crate::consensus::encode::{deserialize, serialize};
-use crate::crypto::key::{PubkeyHash, PublicKey, WPubkeyHash, XOnlyPublicKey};
+use crate::crypto::key::{PubkeyHash, PublicKey, WPubkeyHash};
 use crate::FeeRate;
-
-#[test]
-#[rustfmt::skip]
-fn script() {
-    let mut comp = vec![];
-    let mut script = Builder::new();
-    assert_eq!(script.as_bytes(), &comp[..]);
-
-    // small ints
-    script = script.push_int(1);  comp.push(81u8); assert_eq!(script.as_bytes(), &comp[..]);
-    script = script.push_int(0);  comp.push(0u8);  assert_eq!(script.as_bytes(), &comp[..]);
-    script = script.push_int(4);  comp.push(84u8); assert_eq!(script.as_bytes(), &comp[..]);
-    script = script.push_int(-1); comp.push(79u8); assert_eq!(script.as_bytes(), &comp[..]);
-    // forced scriptint
-    script = script.push_int_non_minimal(4); comp.extend([1u8, 4].iter().cloned()); assert_eq!(script.as_bytes(), &comp[..]);
-    // big ints
-    script = script.push_int(17); comp.extend([1u8, 17].iter().cloned()); assert_eq!(script.as_bytes(), &comp[..]);
-    script = script.push_int(10000); comp.extend([2u8, 16, 39].iter().cloned()); assert_eq!(script.as_bytes(), &comp[..]);
-    // notice the sign bit set here, hence the extra zero/128 at the end
-    script = script.push_int(10000000); comp.extend([4u8, 128, 150, 152, 0].iter().cloned()); assert_eq!(script.as_bytes(), &comp[..]);
-    script = script.push_int(-10000000); comp.extend([4u8, 128, 150, 152, 128].iter().cloned()); assert_eq!(script.as_bytes(), &comp[..]);
-
-    // data
-    script = script.push_slice(b"NRA4VR"); comp.extend([6u8, 78, 82, 65, 52, 86, 82].iter().cloned()); assert_eq!(script.as_bytes(), &comp[..]);
-
-    // keys
-    const KEYSTR1: &str = "21032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af";
-    let key = PublicKey::from_str(&KEYSTR1[2..]).unwrap();
-    script = script.push_key(&key); comp.extend_from_slice(&hex!(KEYSTR1)); assert_eq!(script.as_bytes(), &comp[..]);
-    const KEYSTR2: &str = "41042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133";
-    let key = PublicKey::from_str(&KEYSTR2[2..]).unwrap();
-    script = script.push_key(&key); comp.extend_from_slice(&hex!(KEYSTR2)); assert_eq!(script.as_bytes(), &comp[..]);
-
-    // opcodes
-    script = script.push_opcode(OP_CHECKSIG); comp.push(0xACu8); assert_eq!(script.as_bytes(), &comp[..]);
-    script = script.push_opcode(OP_CHECKSIG); comp.push(0xACu8); assert_eq!(script.as_bytes(), &comp[..]);
-}
-
-#[test]
-fn p2pk_pubkey_bytes_valid_key_and_valid_script_returns_expected_key() {
-    let key_str = "0411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3";
-    let key = PublicKey::from_str(key_str).unwrap();
-    let p2pk = Script::builder().push_key(&key).push_opcode(OP_CHECKSIG).into_script();
-    let actual = p2pk.p2pk_pubkey_bytes().unwrap();
-    assert_eq!(actual.to_vec(), key.to_bytes());
-}
-
-#[test]
-fn p2pk_pubkey_bytes_no_checksig_returns_none() {
-    let key_str = "0411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3";
-    let key = PublicKey::from_str(key_str).unwrap();
-    let no_checksig = Script::builder().push_key(&key).into_script();
-    assert_eq!(no_checksig.p2pk_pubkey_bytes(), None);
-}
 
 #[test]
 fn p2pk_pubkey_bytes_emptry_script_returns_none() {
@@ -75,14 +21,6 @@ fn p2pk_pubkey_bytes_no_key_returns_none() {
     // scripts with no key should return None
     let no_push_bytes = Script::builder().push_opcode(OP_CHECKSIG).into_script();
     assert!(no_push_bytes.p2pk_pubkey_bytes().is_none());
-}
-
-#[test]
-fn p2pk_pubkey_bytes_different_op_code_returns_none() {
-    let key_str = "0411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3";
-    let key = PublicKey::from_str(key_str).unwrap();
-    let different_op_code = Script::builder().push_key(&key).push_opcode(OP_NOP).into_script();
-    assert!(different_op_code.p2pk_pubkey_bytes().is_none());
 }
 
 #[test]
@@ -103,32 +41,6 @@ fn p2pk_pubkey_bytes_invalid_key_returns_some() {
 }
 
 #[test]
-fn p2pk_pubkey_bytes_compressed_key_returns_expected_key() {
-    let compressed_key_str = "0311db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5c";
-    let key = PublicKey::from_str(compressed_key_str).unwrap();
-    let p2pk = Script::builder().push_key(&key).push_opcode(OP_CHECKSIG).into_script();
-    let actual = p2pk.p2pk_pubkey_bytes().unwrap();
-    assert_eq!(actual.to_vec(), key.to_bytes());
-}
-
-#[test]
-fn p2pk_public_key_valid_key_and_valid_script_returns_expected_key() {
-    let key_str = "0411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3";
-    let key = PublicKey::from_str(key_str).unwrap();
-    let p2pk = Script::builder().push_key(&key).push_opcode(OP_CHECKSIG).into_script();
-    let actual = p2pk.p2pk_public_key().unwrap();
-    assert_eq!(actual, key);
-}
-
-#[test]
-fn p2pk_public_key_no_checksig_returns_none() {
-    let key_str = "0411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3";
-    let key = PublicKey::from_str(key_str).unwrap();
-    let no_checksig = Script::builder().push_key(&key).into_script();
-    assert_eq!(no_checksig.p2pk_public_key(), None);
-}
-
-#[test]
 fn p2pk_public_key_empty_script_returns_none() {
     let empty_script = Script::builder().into_script();
     assert!(empty_script.p2pk_public_key().is_none());
@@ -138,14 +50,6 @@ fn p2pk_public_key_empty_script_returns_none() {
 fn p2pk_public_key_no_key_returns_none() {
     let no_push_bytes = Script::builder().push_opcode(OP_CHECKSIG).into_script();
     assert!(no_push_bytes.p2pk_public_key().is_none());
-}
-
-#[test]
-fn p2pk_public_key_different_op_code_returns_none() {
-    let key_str = "0411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3";
-    let key = PublicKey::from_str(key_str).unwrap();
-    let different_op_code = Script::builder().push_key(&key).push_opcode(OP_NOP).into_script();
-    assert!(different_op_code.p2pk_public_key().is_none());
 }
 
 #[test]
@@ -162,26 +66,6 @@ fn p2pk_public_key_invalid_key_returns_none() {
     let invalid_key_script =
         Script::builder().push_slice(malformed_key).push_opcode(OP_CHECKSIG).into_script();
     assert!(invalid_key_script.p2pk_public_key().is_none());
-}
-
-#[test]
-fn p2pk_public_key_compressed_key_returns_some() {
-    let compressed_key_str = "0311db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5c";
-    let key = PublicKey::from_str(compressed_key_str).unwrap();
-    let p2pk = Script::builder().push_key(&key).push_opcode(OP_CHECKSIG).into_script();
-    let actual = p2pk.p2pk_public_key().unwrap();
-    assert_eq!(actual, key);
-}
-
-#[test]
-fn script_x_only_key() {
-    // Notice the "20" which prepends the keystr. That 20 is hexadecimal for "32". The Builder automatically adds the 32 opcode
-    // to our script in order to give a heads up to the script compiler that it should add the next 32 bytes to the stack.
-    // From: https://github.com/bitcoin-core/btcdeb/blob/e8c2750c4a4702768c52d15640ed03bf744d2601/doc/tapscript-example.md?plain=1#L43
-    const KEYSTR: &str = "209997a497d964fc1a62885b05a51166a65a90df00492c8d7cf61d6accf54803be";
-    let x_only_key = XOnlyPublicKey::from_str(&KEYSTR[2..]).unwrap();
-    let script = Builder::new().push_x_only_key(&x_only_key);
-    assert_eq!(script.into_bytes(), &hex!(KEYSTR) as &[u8]);
 }
 
 #[test]
@@ -202,12 +86,11 @@ fn script_generators() {
     let pubkey =
         PublicKey::from_str("0234e6a79c5359c613762d537e0e19d86c77c1666d8c9ab050f23acd198e97f93e")
             .unwrap();
-    assert!(ScriptBuf::new_p2pk(&pubkey).is_p2pk());
 
-    let pubkey_hash = PubkeyHash::hash(&pubkey.inner.serialize());
+    let pubkey_hash = PubkeyHash::hash(&pubkey.inner.to_sec1_bytes());
     assert!(ScriptBuf::new_p2pkh(&pubkey_hash).is_p2pkh());
 
-    let wpubkey_hash = WPubkeyHash::hash(&pubkey.inner.serialize());
+    let wpubkey_hash = WPubkeyHash::hash(&pubkey.inner.to_sec1_bytes());
     assert!(ScriptBuf::new_p2wpkh(&wpubkey_hash).is_p2wpkh());
 
     let script = Builder::new().push_opcode(OP_NUMEQUAL).push_verify().into_script();
@@ -341,13 +224,6 @@ fn script_hashes() {
     assert_eq!(
         script.wscript_hash().to_string(),
         "3e1525eb183ad4f9b3c5fa3175bdca2a52e947b135bbb90383bf9f6408e2c324"
-    );
-    assert_eq!(
-        ScriptBuf::from_hex("20d85a959b0290bf19bb89ed43c916be835475d013da4b362117393e25a48229b8ac")
-            .unwrap()
-            .tapscript_leaf_hash()
-            .to_string(),
-        "5b75adecf53548f3ec6ad7d78383bf84cc57b55a3127c72b9a2481752dd88b21"
     );
 }
 

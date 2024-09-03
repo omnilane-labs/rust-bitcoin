@@ -26,16 +26,12 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use bincode::serialize;
-use bitcoin::bip32::{ChildNumber, KeySource, Xpriv, Xpub};
 use bitcoin::blockdata::locktime::{absolute, relative};
 use bitcoin::blockdata::witness::Witness;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::hashes::{hash160, ripemd160, sha256, sha256d, Hash};
 use bitcoin::hex::FromHex;
-use bitcoin::psbt::raw::{self, Key, Pair, ProprietaryKey};
-use bitcoin::psbt::{Input, Output, Psbt, PsbtSighashType};
 use bitcoin::sighash::{EcdsaSighashType, TapSighashType};
-use bitcoin::taproot::{self, ControlBlock, LeafVersion, TapTree, TaprootBuilder};
 use bitcoin::{
     ecdsa, transaction, Address, Amount, Block, NetworkKind, OutPoint, PrivateKey, PublicKey,
     ScriptBuf, Sequence, Target, Transaction, TxIn, TxOut, Txid, Work,
@@ -148,24 +144,6 @@ fn serde_regression_address() {
 
     let got = serialize(&addr).unwrap();
     let want = include_bytes!("data/serde/address_bincode") as &[_];
-    assert_eq!(got, want)
-}
-
-#[test]
-fn serde_regression_extended_priv_key() {
-    let s = include_str!("data/serde/extended_priv_key");
-    let key = Xpriv::from_str(s.trim()).unwrap();
-    let got = serialize(&key).unwrap();
-    let want = include_bytes!("data/serde/extended_priv_key_bincode") as &[_];
-    assert_eq!(got, want)
-}
-
-#[test]
-fn serde_regression_extended_pub_key() {
-    let s = include_str!("data/serde/extended_pub_key");
-    let key = Xpub::from_str(s.trim()).unwrap();
-    let got = serialize(&key).unwrap();
-    let want = include_bytes!("data/serde/extended_pub_key_bincode") as &[_];
     assert_eq!(got, want)
 }
 

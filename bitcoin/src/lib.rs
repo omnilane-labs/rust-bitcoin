@@ -95,7 +95,6 @@ pub mod p2p;
 pub mod address;
 pub mod bip152;
 pub mod bip158;
-pub mod bip32;
 pub mod blockdata;
 pub mod consensus;
 // Private until we either make this a crate or flatten it - still to be decided.
@@ -106,9 +105,7 @@ pub mod merkle_tree;
 pub mod network;
 pub mod policy;
 pub mod pow;
-pub mod psbt;
 pub mod sign_message;
-pub mod taproot;
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(inline)]
@@ -116,7 +113,6 @@ pub use crate::{
     address::{Address, AddressType, KnownHrp},
     amount::{Amount, Denomination, SignedAmount},
     bip158::{FilterHash, FilterHeader},
-    bip32::XKeyIdentifier,
     blockdata::block::{self, Block, BlockHash, TxMerkleNode, WitnessMerkleNode, WitnessCommitment},
     blockdata::constants,
     blockdata::fee_rate::FeeRate,
@@ -131,14 +127,12 @@ pub use crate::{
     consensus::encode::VarInt,
     consensus::params,
     crypto::ecdsa,
-    crypto::key::{self, PrivateKey, PubkeyHash, PublicKey, CompressedPublicKey, WPubkeyHash, XOnlyPublicKey},
+    crypto::key::{self, PubkeyHash, PublicKey, CompressedPublicKey, WPubkeyHash},
     crypto::sighash::{self, LegacySighash, SegwitV0Sighash, TapSighash, TapSighashTag},
     merkle_tree::MerkleBlock,
     network::{Network, NetworkKind},
     pow::{CompactTarget, Target, Work},
-    psbt::Psbt,
     sighash::{EcdsaSighashType, TapSighashType},
-    taproot::{TapBranchTag, TapLeafHash, TapLeafTag, TapNodeHash, TapTweakHash, TapTweakTag},
 };
 
 #[rustfmt::skip]
