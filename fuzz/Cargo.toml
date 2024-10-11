@@ -30,10 +30,6 @@ name = "bitcoin_deserialize_prefilled_transaction"
 path = "fuzz_targets/bitcoin/deserialize_prefilled_transaction.rs"
 
 [[bin]]
-name = "bitcoin_deserialize_psbt"
-path = "fuzz_targets/bitcoin/deserialize_psbt.rs"
-
-[[bin]]
 name = "bitcoin_deserialize_script"
 path = "fuzz_targets/bitcoin/deserialize_script.rs"
 
